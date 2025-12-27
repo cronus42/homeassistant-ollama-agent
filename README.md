@@ -1,8 +1,8 @@
 # Home Assistant Ollama Conversation Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
-[![GitHub Release](https://img.shields.io/github/release/yourusername/homeassistant-ollama-agent.svg)](https://github.com/yourusername/homeassistant-ollama-agent/releases)
-[![License](https://img.shields.io/github/license/yourusername/homeassistant-ollama-agent.svg)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/release/cronus42/homeassistant-ollama-agent.svg)](https://github.com/cronus42/homeassistant-ollama-agent/releases)
+[![License](https://img.shields.io/github/license/cronus42/homeassistant-ollama-agent.svg)](LICENSE)
 
 A Home Assistant custom integration that provides conversation agent capabilities using Ollama with full tool/function calling support for device control.
 
@@ -95,5 +95,5 @@ This integration processes everything locally. Your conversations never leave yo
 ## 💬 Support
 
 - 📖 [Documentation](custom_components/ollama_conversation/README.md)
-- 🐛 [Issues](https://github.com/yourusername/homeassistant-ollama-agent/issues)
+- 🐛 [Issues](https://github.com/cronus42/homeassistant-ollama-agent/issues)
 - 💬 [Home Assistant Community](https://community.home-assistant.io)

@@ -83,6 +83,51 @@ class TestOllamaClient:
             response = await client.chat(messages, "llama2")
             
             assert response["message"]["content"] == "Hello! How can I help you?"
+    
+    @pytest.mark.asyncio
+    async def test_chat_with_tools(self, mock_hass):
+        """Test chat request with tools."""
+        with aioresponses() as m:
+            m.post(
+                "http://localhost:11434/api/chat",
+                payload={
+                    "message": {
+                        "role": "assistant",
+                        "content": "I'll turn on the lights",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "light_turn_on",
+                                    "arguments": {"entity_id": "light.living_room"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            )
+            
+            client = OllamaClient(mock_hass, "http://localhost:11434")
+            messages = [{"role": "user", "content": "Turn on living room lights"}]
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "light_turn_on",
+                        "description": "Turn on a light",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "entity_id": {"type": "string"}
+                            },
+                            "required": ["entity_id"]
+                        }
+                    }
+                }
+            ]
+            response = await client.chat(messages, "llama2", tools=tools)
+            
+            assert "tool_calls" in response["message"]
+            assert response["message"]["tool_calls"][0]["function"]["name"] == "light_turn_on"
 
 
 class TestIntegrationSetup:
@@ -119,6 +164,34 @@ class TestIntegrationSetup:
         assert mock_config_entry.entry_id not in mock_hass.data[DOMAIN]
 
 
+class TestConversationEntity:
+    """Test OllamaConversationEntity."""
+    
+    def test_supported_features(self, mock_hass, mock_config_entry):
+        """Test that entity declares CONTROL feature."""
+        from custom_components.ollama_conversation.conversation import OllamaConversationEntity
+        
+        # Import locally to avoid top-level import issues
+        try:
+            from homeassistant.components import conversation
+            entity = OllamaConversationEntity(mock_hass, mock_config_entry)
+            assert entity.supported_features == conversation.ConversationEntityFeature.CONTROL
+        except ImportError:
+            pytest.skip("conversation module dependencies not available")
+    
+    def test_entity_properties(self, mock_hass, mock_config_entry):
+        """Test entity properties are set correctly."""
+        from custom_components.ollama_conversation.conversation import OllamaConversationEntity
+        
+        try:
+            entity = OllamaConversationEntity(mock_hass, mock_config_entry)
+            assert entity._attr_unique_id == mock_config_entry.entry_id
+            assert entity._attr_device_info["model"] == "llama2"
+            assert entity._attr_has_entity_name is True
+        except ImportError:
+            pytest.skip("conversation module dependencies not available")
+
+
 def test_manifest_structure():
     """Test that manifest.json has required structure."""
     import json
@@ -133,6 +206,8 @@ def test_manifest_structure():
     
     assert manifest["domain"] == "ollama_conversation"
     assert "version" in manifest
+    # Version should be semantic versioning format
+    assert len(manifest["version"].split(".")) == 3
     assert "requirements" in manifest
     assert any("ollama" in req for req in manifest["requirements"])
 
@@ -148,7 +223,7 @@ def test_constants_defined():
     )
     
     assert DOMAIN == "ollama_conversation"
-    assert DEFAULT_URL == "http://sanctuarymoon.local:11434"
+    assert DEFAULT_URL == "http://yourserverhere:11434"
     assert DEFAULT_TEMPERATURE == 0.7
     assert API_CHAT == "/api/chat"
     assert API_TAGS == "/api/tags"

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-12-27
+
+### Fixed
+- **Bug #1**: Fixed 500 Internal Server Error when conversing with assistant
+  - Added better error handling and logging in chat API calls
+  - Increased timeout from 30s to 60s for tool-heavy conversations
+  - Added detailed debug logging to diagnose API issues
+  - Fixed response parsing to handle edge cases
+- **Bug #2**: Fixed "This assistant cannot control your home" warning
+  - Added `supported_features` property returning `ConversationEntityFeature.CONTROL`
+  - Integration now properly declares device control capabilities to Home Assistant
+
+### Changed
+- Improved error messages with more descriptive information
+- Added `async_set_speech()` call to properly set response text in intent
+- Enhanced tool argument parsing to handle both dict and string formats
+- Better exception handling with user-friendly error messages
+
+### Improved
+- More comprehensive logging throughout the integration
+- Better JSON parsing error handling
+- Response status validation before parsing
+
 ## [1.0.0] - 2025-12-26
 
 ### Added

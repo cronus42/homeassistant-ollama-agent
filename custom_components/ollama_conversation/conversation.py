@@ -1,6 +1,7 @@
 """Conversation support for Ollama."""
 import logging
 from typing import Any, Literal
+import json
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntity, ConversationInput, ConversationResult
@@ -17,6 +18,7 @@ from .const import (
     CONF_TEMPERATURE,
     DOMAIN,
 )
+from .helpers import async_get_exposed_entities, format_entities_for_prompt
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up conversation entities."""
-    agent = OllamaConversationEntity(config_entry)
+    agent = OllamaConversationEntity(hass, config_entry)
     async_add_entities([agent])
 
 
@@ -37,8 +39,9 @@ class OllamaConversationEntity(ConversationEntity):
     _attr_has_entity_name = True
     _attr_name = None
 
-    def __init__(self, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the agent."""
+        self.hass = hass
         self.entry = entry
         self._attr_unique_id = entry.entry_id
         self._attr_device_info = {
@@ -53,6 +56,11 @@ class OllamaConversationEntity(ConversationEntity):
         """Return supported languages."""
         return MATCH_ALL
 
+    @property
+    def supported_features(self) -> conversation.ConversationEntityFeature:
+        """Return supported features."""
+        return conversation.ConversationEntityFeature.CONTROL
+
     async def async_process(
         self, user_input: ConversationInput
     ) -> ConversationResult:
@@ -64,8 +72,8 @@ class OllamaConversationEntity(ConversationEntity):
         # Build conversation history
         messages = []
         
-        # System prompt
-        system_prompt = self._build_system_prompt()
+        # System prompt with entity context (now async!)
+        system_prompt = await self._build_system_prompt()
         messages.append({"role": "system", "content": system_prompt})
         
         # Add conversation history if available
@@ -118,24 +126,64 @@ class OllamaConversationEntity(ConversationEntity):
             
             self.hass.data[f"{DOMAIN}_conversations"][conversation_id] = messages[-10:]  # Keep last 10 messages
 
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_speech(response_text)
+            
             return ConversationResult(
-                response=intent.IntentResponse(language=user_input.language),
+                response=intent_response,
                 conversation_id=conversation_id,
             )
 
         except Exception as err:
-            _LOGGER.error("Error processing conversation: %s", err)
+            _LOGGER.exception("Error processing conversation: %s", err)
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                f"Sorry, I encountered an error: {str(err)}"
+            )
             return ConversationResult(
-                response=intent.IntentResponse(language=user_input.language),
+                response=intent_response,
                 conversation_id=user_input.conversation_id,
             )
 
-    def _build_system_prompt(self) -> str:
-        """Build the system prompt with Home Assistant context."""
-        return """You are a helpful assistant integrated with Home Assistant.
-You can control smart home devices and answer questions.
-When asked to control devices, use the available tools to execute actions.
-Always confirm actions and provide clear feedback to the user."""
+    async def _build_system_prompt(self) -> str:
+        """Build the system prompt with Home Assistant entity context.
+        
+        This dynamically includes:
+        - List of available devices and their current states
+        - Information about device locations (areas)
+        - Specific instructions for tool usage
+        """
+        # Get all exposed entities
+        entities = await async_get_exposed_entities(self.hass)
+        formatted_entities = format_entities_for_prompt(entities)
+        
+        system_prompt = f"""You are a helpful Home Assistant assistant that can control smart home devices.
+
+{formatted_entities}
+
+**Your Capabilities:**
+You can interact with the devices listed above using these tools:
+- light_turn_on: Turn on a light or adjust brightness
+- light_turn_off: Turn off a light
+- climate_set_temperature: Set target temperature for climate devices
+
+**Important Instructions:**
+1. Always use the EXACT entity_id when calling tools (e.g., light.living_room, not "living room light")
+2. Entity IDs use the format: domain.device_name (e.g., light.kitchen, climate.bedroom)
+3. When the user refers to a device by name, find the matching entity_id from the list above
+4. If a device name is ambiguous or not found, ask the user for clarification
+5. Always confirm what action you're performing before executing
+6. After taking an action, report what was done
+
+**Example Interactions:**
+- User: "Turn on the kitchen light" → You use light_turn_on with entity_id "light.kitchen"
+- User: "Set the bedroom to 72 degrees" → You use climate_set_temperature with entity_id "climate.bedroom" and temperature 72
+- User: "Turn off all lights" → You ask which lights since there are multiple, or turn off each one separately
+
+Now respond helpfully to the user's request."""
+
+        return system_prompt
 
     def _get_ha_tools(self) -> list[dict]:
         """Get available Home Assistant tools for the model."""
@@ -146,7 +194,7 @@ Always confirm actions and provide clear feedback to the user."""
             "type": "function",
             "function": {
                 "name": "light_turn_on",
-                "description": "Turn on a light or adjust its brightness/color",
+                "description": "Turn on a light or adjust its brightness",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -213,34 +261,66 @@ Always confirm actions and provide clear feedback to the user."""
         """Execute a tool call and return the result."""
         function_name = tool_call["function"]["name"]
         arguments = tool_call["function"].get("arguments", {})
+        
+        # Parse arguments if they're a string
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                _LOGGER.error("Failed to parse tool arguments: %s", arguments)
+                return f"Error: Invalid arguments format"
 
         try:
             if function_name == "light_turn_on":
+                entity_id = arguments.get("entity_id")
+                brightness = arguments.get("brightness")
+                
+                if not entity_id:
+                    return "Error: light_turn_on requires entity_id parameter"
+                
+                service_data = {"entity_id": entity_id}
+                if brightness is not None:
+                    service_data["brightness"] = brightness
+                
                 await self.hass.services.async_call(
                     "light",
                     "turn_on",
-                    arguments,
+                    service_data,
                     blocking=True,
                 )
-                return f"Successfully turned on {arguments.get('entity_id')}"
+                
+                if brightness is not None:
+                    return f"Successfully turned on {entity_id} to {brightness} brightness"
+                return f"Successfully turned on {entity_id}"
 
             elif function_name == "light_turn_off":
+                entity_id = arguments.get("entity_id")
+                
+                if not entity_id:
+                    return "Error: light_turn_off requires entity_id parameter"
+                
                 await self.hass.services.async_call(
                     "light",
                     "turn_off",
-                    arguments,
+                    {"entity_id": entity_id},
                     blocking=True,
                 )
-                return f"Successfully turned off {arguments.get('entity_id')}"
+                return f"Successfully turned off {entity_id}"
 
             elif function_name == "climate_set_temperature":
+                entity_id = arguments.get("entity_id")
+                temperature = arguments.get("temperature")
+                
+                if not entity_id or temperature is None:
+                    return "Error: climate_set_temperature requires entity_id and temperature"
+                
                 await self.hass.services.async_call(
                     "climate",
                     "set_temperature",
-                    arguments,
+                    {"entity_id": entity_id, "temperature": temperature},
                     blocking=True,
                 )
-                return f"Successfully set temperature for {arguments.get('entity_id')} to {arguments.get('temperature')}"
+                return f"Successfully set {entity_id} to {temperature}°"
 
             else:
                 return f"Unknown function: {function_name}"
