@@ -1,0 +1,151 @@
+# Home Assistant Ollama Conversation Integration - Development Guide
+
+## Quick Overview
+
+**Domain**: ollama_conversation
+**Version**: 1.0.0  
+**Purpose**: Local AI conversation agent using Ollama with tool calling for device control
+**Author**: goose (Block's AI agent)
+
+## Repository Structure
+
+```
+homeassistant-ollama-agent/
+├── custom_components/ollama_conversation/
+│   ├── __init__.py          # OllamaClient + setup/teardown
+│   ├── config_flow.py       # UI configuration (2-step)
+│   ├── const.py             # Constants and defaults
+│   ├── conversation.py      # ConversationEntity + tool execution
+│   ├── manifest.json        # Integration metadata
+│   └── strings.json         # UI translations
+├── README.md                # Main docs
+├── INSTALL.md               # Installation guide
+├── CHANGELOG.md             # Version history
+└── LICENSE                  # MIT
+```
+
+## Core Components
+
+### __init__.py - Entry Point
+- `OllamaClient` class for HTTP communication
+- `get_models()` - List available models (5s timeout)
+- `chat()` - Send messages with tools (30s timeout)
+- `async_setup_entry()` - Validates connection, stores client
+- `async_unload_entry()` - Cleanup
+
+### config_flow.py - Configuration
+**Step 1**: URL entry + validation
+**Step 2**: Model selection + parameters (temperature, context_window, top_p, top_k)
+
+### conversation.py - Agent Logic
+- `async_process()` - Main conversation handler
+- `_get_ha_tools()` - Define available tools (light, climate)
+- `_execute_tool_call()` - Execute via hass.services
+- System prompt + conversation history (last 10 messages)
+- Tool execution loop
+
+### const.py - Configuration
+- DOMAIN = "ollama_conversation"
+- DEFAULT_URL = "http://sanctuarymoon.local:11434"
+- DEFAULT_TEMPERATURE = 0.7
+- Timeouts, API endpoints
+
+## Network Topology
+
+**Dev Machine**: gurathin (192.168.1.249) - Ollama running here
+**HA Server**: sanctuarymoon.local (192.168.1.118) - Deployment target
+
+## Key Features
+
+1. **Tool Calling**: Native Ollama function calling API
+2. **UI Config**: No YAML needed
+3. **Device Control**: Lights (on/off, brightness), Climate (temperature)
+4. **Conversation Memory**: Last 10 messages per conversation
+5. **Dynamic Models**: Dropdown populated from server
+
+## Supported Tools
+
+Currently implemented:
+- `light_turn_on(entity_id, brightness?)`
+- `light_turn_off(entity_id)`
+- `climate_set_temperature(entity_id, temperature)`
+
+To add more: Edit `_get_ha_tools()` and `_execute_tool_call()` in conversation.py
+
+## Development Workflow
+
+**Test Unit**:
+```bash
+cd custom_components/ollama_conversation
+pytest test_integration.py -v
+```
+
+**Deploy to HA**:
+```bash
+scp -r custom_components/ollama_conversation sanctuarymoon.local:/config/custom_components/
+```
+
+**Debug Logs**:
+```bash
+tail -f /config/home-assistant.log | grep ollama
+```
+
+## Common Issues
+
+**Cannot connect**: Check Ollama running, URL correct, firewall
+**No models**: Run `ollama pull home-functiongemma-270m`
+**Tool calls fail**: Use tool-capable model, verify entity IDs exist
+
+## Extending
+
+**Add device type**:
+1. Add tool definition in `_get_ha_tools()`
+2. Add handler in `_execute_tool_call()`
+3. Test with real devices
+
+**Add options flow**:
+1. Add `async_get_options_flow()` to config_flow.py
+2. Handle options in conversation.py
+
+## Ollama API
+
+**GET /api/tags** - List models
+**POST /api/chat** - Chat with tools
+- messages: [{role, content}, ...]
+- tools: [{type: "function", function: {...}}, ...]
+- stream: false
+- options: {temperature, ...}
+
+Response: {message: {role, content, tool_calls}, ...}
+
+## Git Workflow
+
+- Branch: master
+- Initial commit: bde8d02
+- Tag releases: `git tag v1.x.x`
+
+## Testing Checklist
+
+- [ ] Integration loads after restart
+- [ ] Config flow works
+- [ ] Model dropdown populated
+- [ ] Simple conversation works
+- [ ] Light control works
+- [ ] Climate control works
+- [ ] History maintained
+- [ ] Errors handled gracefully
+
+## Quick Commands
+
+**Test conversation**:
+```yaml
+service: conversation.process
+data:
+  text: "Turn on kitchen lights"
+  agent_id: conversation.ollama_conversation
+```
+
+**Check Ollama**:
+```bash
+curl http://192.168.1.249:11434/api/tags
+```
