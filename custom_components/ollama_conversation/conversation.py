@@ -1,5 +1,6 @@
 """Conversation support for Ollama."""
 import logging
+import re
 from typing import Any, Literal
 import json
 
@@ -21,6 +22,39 @@ from .const import (
 from .helpers import async_get_exposed_entities, format_entities_for_prompt
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _filter_think_blocks(text: str) -> str:
+    """Remove <think>...</think> blocks from response text.
+    
+    This filters out internal reasoning blocks that should not be shown to users.
+    Handles multiple blocks and various formatting variations.
+    
+    Args:
+        text: The response text potentially containing think blocks
+        
+    Returns:
+        The cleaned text with all think blocks removed
+    """
+    if not text:
+        return text
+    
+    # Pattern to match <think>...</think> blocks (case-insensitive, with DOTALL flag)
+    # This handles:
+    # - Multiple think blocks in one response
+    # - Newlines and multi-line content within blocks
+    # - Whitespace variations
+    pattern = r'<think>.*?</think>'
+    
+    # Remove all think blocks
+    cleaned = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Clean up any excess whitespace left behind
+    # Replace multiple newlines with a single newline, then strip leading/trailing whitespace
+    cleaned = re.sub(r'\n\s*\n+', '\n', cleaned)
+    cleaned = cleaned.strip()
+    
+    return cleaned
 
 
 async def async_setup_entry(
@@ -118,6 +152,9 @@ class OllamaConversationEntity(ConversationEntity):
                 )
 
             response_text = response.get("message", {}).get("content", "I'm sorry, I couldn't process that.")
+            
+            # Filter out think blocks before returning to user
+            response_text = _filter_think_blocks(response_text)
 
             # Store conversation history
             conversation_id = user_input.conversation_id or ulid.ulid_now()
