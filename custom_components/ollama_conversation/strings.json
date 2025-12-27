@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Ollama",
+        "description": "Enter the URL of your Ollama server",
+        "data": {
+          "url": "Server URL"
+        }
+      },
+      "model": {
+        "title": "Select Model",
+        "description": "Choose the Ollama model and configure parameters",
+        "data": {
+          "model": "Model",
+          "temperature": "Temperature",
+          "context_window": "Context Window",
+          "top_p": "Top P",
+          "top_k": "Top K"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Ollama server",
+      "no_models": "No models found on the server",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This Ollama server is already configured"
+    }
+  }
+}
