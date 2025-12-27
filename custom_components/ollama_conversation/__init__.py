@@ -97,11 +97,40 @@ class OllamaClient:
         if tools:
             payload["tools"] = tools
         
+        _LOGGER.debug("Sending chat request to %s with model %s", url, model)
+        _LOGGER.debug("Messages: %s", messages)
+        _LOGGER.debug("Tools: %s", tools is not None and len(tools) if tools else 0)
+        
         try:
-            async with async_timeout.timeout(30):
+            async with async_timeout.timeout(60):  # Increased timeout for tool calls
                 response = await self.session.post(url, json=payload)
-                response.raise_for_status()
-                return await response.json()
+                
+                # Log the response status and content for debugging
+                response_text = await response.text()
+                _LOGGER.debug("Response status: %s", response.status)
+                _LOGGER.debug("Response body: %s", response_text[:500])  # First 500 chars
+                
+                if response.status != 200:
+                    _LOGGER.error("Ollama API error: %s - %s", response.status, response_text)
+                    raise aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=response.status,
+                        message=f"Ollama API returned {response.status}: {response_text[:200]}",
+                        headers=response.headers,
+                    )
+                
+                # Parse JSON from the response text
+                try:
+                    return await response.json()
+                except Exception as json_err:
+                    _LOGGER.error("Failed to parse JSON response: %s", json_err)
+                    _LOGGER.error("Response text: %s", response_text)
+                    raise
+                    
         except aiohttp.ClientError as err:
             _LOGGER.error("Error in chat request: %s", err)
+            raise
+        except TimeoutError as err:
+            _LOGGER.error("Timeout in chat request after 60s")
             raise

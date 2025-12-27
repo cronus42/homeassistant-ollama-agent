@@ -11,7 +11,7 @@ CONF_TOP_P = "top_p"
 CONF_TOP_K = "top_k"
 
 # Defaults
-DEFAULT_URL = "http://sanctuarymoon.local:11434"
+DEFAULT_URL = "http://yourserverhere:11434"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_CONTEXT_WINDOW = 8192
 DEFAULT_TOP_P = 0.9

@@ -1,6 +1,7 @@
 """Conversation support for Ollama."""
 import logging
 from typing import Any, Literal
+import json
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntity, ConversationInput, ConversationResult
@@ -52,6 +53,11 @@ class OllamaConversationEntity(ConversationEntity):
     def supported_languages(self) -> list[str] | Literal["*"]:
         """Return supported languages."""
         return MATCH_ALL
+
+    @property
+    def supported_features(self) -> conversation.ConversationEntityFeature:
+        """Return supported features."""
+        return conversation.ConversationEntityFeature.CONTROL
 
     async def async_process(
         self, user_input: ConversationInput
@@ -118,15 +124,23 @@ class OllamaConversationEntity(ConversationEntity):
             
             self.hass.data[f"{DOMAIN}_conversations"][conversation_id] = messages[-10:]  # Keep last 10 messages
 
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_speech(response_text)
+            
             return ConversationResult(
-                response=intent.IntentResponse(language=user_input.language),
+                response=intent_response,
                 conversation_id=conversation_id,
             )
 
         except Exception as err:
             _LOGGER.error("Error processing conversation: %s", err)
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                f"Sorry, I encountered an error: {str(err)}"
+            )
             return ConversationResult(
-                response=intent.IntentResponse(language=user_input.language),
+                response=intent_response,
                 conversation_id=user_input.conversation_id,
             )
 
@@ -213,6 +227,14 @@ Always confirm actions and provide clear feedback to the user."""
         """Execute a tool call and return the result."""
         function_name = tool_call["function"]["name"]
         arguments = tool_call["function"].get("arguments", {})
+        
+        # Parse arguments if they're a string
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                _LOGGER.error("Failed to parse tool arguments: %s", arguments)
+                return f"Error: Invalid arguments format"
 
         try:
             if function_name == "light_turn_on":
