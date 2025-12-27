@@ -1,6 +1,7 @@
 """Conversation support for Ollama."""
 import logging
 import re
+import json
 from typing import Any, Literal
 import json
 
@@ -40,21 +41,188 @@ def _filter_think_blocks(text: str) -> str:
         return text
     
     # Pattern to match <think>...</think> blocks (case-insensitive, with DOTALL flag)
-    # This handles:
-    # - Multiple think blocks in one response
-    # - Newlines and multi-line content within blocks
-    # - Whitespace variations
     pattern = r'<think>.*?</think>'
     
     # Remove all think blocks
     cleaned = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
     
     # Clean up any excess whitespace left behind
-    # Replace multiple newlines with a single newline, then strip leading/trailing whitespace
     cleaned = re.sub(r'\n\s*\n+', '\n', cleaned)
     cleaned = cleaned.strip()
     
     return cleaned
+
+
+def _is_gemma3_tool_format(response: dict) -> bool:
+    """Detect if response is in gemma3-tools format.
+    
+    Gemma3-tools format has:
+    - A "type" field indicating the domain
+    - Entity IDs as keys with action values
+    - No "tool_calls" field
+    
+    Args:
+        response: The response message dict
+        
+    Returns:
+        True if response is gemma3-tools format, False otherwise
+    """
+    if not isinstance(response, dict):
+        return False
+    
+    # Check for standard tool_calls format
+    if "tool_calls" in response:
+        return False
+    
+    # Check for gemma3-tools format markers
+    has_type_field = "type" in response
+    
+    if not has_type_field:
+        return False
+    
+    # Should have type and other keys that look like entity_ids
+    type_val = response.get("type")
+    if not isinstance(type_val, str):
+        return False
+    
+    # Look for entity_id patterns (e.g., light.desk_lamp, climate.bedroom)
+    for key in response.keys():
+        if key != "type" and ("." in key or key in ["on", "off", "brightness"]):
+            return True
+    
+    return False
+
+
+def _parse_gemma3_tool_format(response: dict, domain_map: dict = None) -> list:
+    """Parse gemma3-tools format and convert to standard tool_calls format.
+    
+    Gemma3-tools format example:
+    {
+        "type": "light",
+        "light.desk_lamp": "on",
+        "light.kitchen": {"brightness": 200}
+    }
+    
+    Converts to standard format:
+    [
+        {
+            "function": {
+                "name": "light_turn_on",
+                "arguments": {"entity_id": "light.desk_lamp"}
+            }
+        },
+        ...
+    ]
+    
+    Args:
+        response: The gemma3-tools format response
+        domain_map: Optional mapping of domain to action names (for future extensibility)
+        
+    Returns:
+        List of tool_calls in standard format
+    """
+    tool_calls = []
+    domain = response.get("type", "unknown")
+    
+    for key, value in response.items():
+        if key == "type":
+            continue
+        
+        # Skip special keys
+        if key in ["__reasoning__", "text"]:
+            continue
+        
+        # Parse entity ID and action
+        entity_id = key if "." in key else f"{domain}.{key}"
+        
+        # Handle different action formats
+        if isinstance(value, str):
+            # Simple string action (e.g., "on", "off")
+            action = value.lower()
+            
+            if domain == "light":
+                if action == "on":
+                    tool_call = {
+                        "function": {
+                            "name": "light_turn_on",
+                            "arguments": {"entity_id": entity_id}
+                        }
+                    }
+                elif action == "off":
+                    tool_call = {
+                        "function": {
+                            "name": "light_turn_off",
+                            "arguments": {"entity_id": entity_id}
+                        }
+                    }
+                else:
+                    continue
+                    
+            elif domain == "climate":
+                # For climate, value should be a number (temperature)
+                try:
+                    temp = float(value)
+                    tool_call = {
+                        "function": {
+                            "name": "climate_set_temperature",
+                            "arguments": {"entity_id": entity_id, "temperature": temp}
+                        }
+                    }
+                except (ValueError, TypeError):
+                    _LOGGER.warning(
+                        "Could not parse climate temperature from: %s = %s",
+                        entity_id, value
+                    )
+                    continue
+            else:
+                _LOGGER.warning("Unknown domain in gemma3 format: %s", domain)
+                continue
+                
+        elif isinstance(value, dict):
+            # Complex action with parameters (e.g., {"brightness": 200})
+            if domain == "light":
+                # Assume it's a light_turn_on with brightness
+                tool_call = {
+                    "function": {
+                        "name": "light_turn_on",
+                        "arguments": {
+                            "entity_id": entity_id,
+                            **value  # Include brightness and other params
+                        }
+                    }
+                }
+            elif domain == "climate":
+                # Extract temperature if present
+                if "temperature" in value:
+                    tool_call = {
+                        "function": {
+                            "name": "climate_set_temperature",
+                            "arguments": {
+                                "entity_id": entity_id,
+                                "temperature": value["temperature"]
+                            }
+                        }
+                    }
+                else:
+                    _LOGGER.warning(
+                        "Climate action missing temperature: %s = %s",
+                        entity_id, value
+                    )
+                    continue
+            else:
+                _LOGGER.warning("Unknown domain in gemma3 format: %s", domain)
+                continue
+        else:
+            _LOGGER.warning(
+                "Unexpected value type in gemma3 format: %s = %s (%s)",
+                entity_id, value, type(value)
+            )
+            continue
+        
+        if "tool_call" in locals():
+            tool_calls.append(tool_call)
+    
+    return tool_calls
 
 
 async def async_setup_entry(
@@ -131,10 +299,28 @@ class OllamaConversationEntity(ConversationEntity):
                 temperature=temperature,
             )
 
-            # Handle tool calls if present
-            if "message" in response and response["message"].get("tool_calls"):
-                tool_calls = response["message"]["tool_calls"]
-                messages.append(response["message"])
+            # Extract message content
+            message_content = response.get("message", {})
+            tool_calls = None
+            
+            # Handle tool calls - check for both standard and gemma3-tools formats
+            if "tool_calls" in message_content:
+                # Standard format
+                tool_calls = message_content.get("tool_calls")
+                _LOGGER.debug("Detected standard tool call format")
+            elif _is_gemma3_tool_format(message_content):
+                # Gemma3-tools format
+                _LOGGER.debug("Detected gemma3-tools format, converting...")
+                tool_calls = _parse_gemma3_tool_format(message_content)
+                if tool_calls:
+                    _LOGGER.debug("Converted %d gemma3-tools calls to standard format", len(tool_calls))
+            
+            # Execute tool calls if any were found
+            if tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": message_content.get("content", "")
+                })
                 
                 # Execute tool calls
                 for tool_call in tool_calls:
