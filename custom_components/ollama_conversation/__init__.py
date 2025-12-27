@@ -102,7 +102,7 @@ class OllamaClient:
         _LOGGER.debug("Tools: %s", tools is not None and len(tools) if tools else 0)
         
         try:
-            async with async_timeout.timeout(60):  # Increased timeout for tool calls
+            async with async_timeout.timeout(120):  # Increased timeout for tool calls
                 response = await self.session.post(url, json=payload)
                 
                 # Log the response status and content for debugging
