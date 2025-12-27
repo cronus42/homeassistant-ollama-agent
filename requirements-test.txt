@@ -1,0 +1,26 @@
+# Testing dependencies for Home Assistant Ollama Conversation Integration
+
+# Core testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.21.0
+pytest-homeassistant-custom-component>=0.13.0
+
+# Home Assistant testing
+homeassistant>=2024.12.0
+
+# HTTP mocking for testing
+aioresponses>=0.7.4
+requests-mock>=1.9.3
+
+# Code quality
+black>=23.0.0
+isort>=5.12.0
+ruff>=0.1.0
+mypy>=1.0.0
+
+# Type stubs
+types-requests>=2.28.0
+
+# For running tests with Ollama (optional)
+# ollama>=0.1.0  # Uncomment if using real Ollama in tests
