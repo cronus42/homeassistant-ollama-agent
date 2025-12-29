@@ -317,20 +317,27 @@ class OllamaConversationEntity(ConversationEntity):
             message_content = response.get("message", {})
             tool_calls = None
             
+            # DEBUG: Log the full response to see what we got
+            _LOGGER.debug("Full response from Ollama: %s", response)
+            _LOGGER.debug("Message content keys: %s", list(message_content.keys()))
+            
             # Handle tool calls - check for both standard and gemma3-tools formats
             if "tool_calls" in message_content:
                 # Standard format
                 tool_calls = message_content.get("tool_calls")
-                _LOGGER.debug("Detected standard tool call format")
+                _LOGGER.info("Detected standard tool call format: %s", tool_calls)
             elif _is_gemma3_tool_format(message_content):
                 # Gemma3-tools format
-                _LOGGER.debug("Detected gemma3-tools format, converting...")
+                _LOGGER.info("Detected gemma3-tools format, converting...")
                 tool_calls = _parse_gemma3_tool_format(message_content)
                 if tool_calls:
-                    _LOGGER.debug("Converted %d gemma3-tools calls to standard format", len(tool_calls))
+                    _LOGGER.info("Converted %d gemma3-tools calls to standard format: %s", len(tool_calls), tool_calls)
+            else:
+                _LOGGER.warning("No tool calls detected in response. Content: %s", message_content.get("content", "")[:500])
             
             # Execute tool calls if any were found
             if tool_calls:
+                _LOGGER.info("Executing %d tool calls", len(tool_calls))
                 messages.append({
                     "role": "assistant",
                     "content": message_content.get("content", "")
