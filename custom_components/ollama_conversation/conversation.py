@@ -29,7 +29,7 @@ def _filter_think_blocks(text: str) -> str:
     """Remove <think>...</think> blocks from response text.
     
     This filters out internal reasoning blocks that should not be shown to users.
-    Handles multiple blocks and various formatting variations.
+    Handles multiple blocks, unclosed tags, and various formatting variations.
     
     Args:
         text: The response text potentially containing think blocks
@@ -40,17 +40,31 @@ def _filter_think_blocks(text: str) -> str:
     if not text:
         return text
     
-    # Pattern to match <think>...</think> blocks (case-insensitive, with DOTALL flag)
-    pattern = r'<think>.*?</think>'
+    original_text = text
     
-    # Remove all think blocks
-    cleaned = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+    # Pattern 1: Match complete <think>...</think> blocks (case-insensitive, with DOTALL flag)
+    pattern_complete = r'<think>.*?</think>'
+    text = re.sub(pattern_complete, '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Pattern 2: Match unclosed <think> blocks (everything from <think> to end of string)
+    pattern_unclosed = r'<think>.*$'
+    text = re.sub(pattern_unclosed, '', text, flags=re.IGNORECASE | re.DOTALL)
     
     # Clean up any excess whitespace left behind
-    cleaned = re.sub(r'\n\s*\n+', '\n', cleaned)
-    cleaned = cleaned.strip()
+    text = re.sub(r'\n\s*\n+', '\n', text)
+    text = text.strip()
     
-    return cleaned
+    # Log if we filtered something out
+    if text != original_text:
+        _LOGGER.debug(
+            "Filtered think blocks from response. Original length: %d, Filtered length: %d",
+            len(original_text), len(text)
+        )
+        _LOGGER.debug("Original response: %s", original_text[:200])  # Log first 200 chars
+        if text:
+            _LOGGER.debug("Filtered response: %s", text[:200])
+    
+    return text
 
 
 def _is_gemma3_tool_format(response: dict) -> bool:
@@ -323,24 +337,64 @@ class OllamaConversationEntity(ConversationEntity):
                 })
                 
                 # Execute tool calls
+                tool_results = []
                 for tool_call in tool_calls:
                     tool_result = await self._execute_tool_call(tool_call)
+                    tool_results.append(tool_result)
                     messages.append({
                         "role": "tool",
                         "content": str(tool_result),
                     })
                 
                 # Get final response after tool execution
+                _LOGGER.debug("Requesting final response after tool execution")
                 response = await client.chat(
                     messages=messages,
                     model=model,
                     temperature=temperature,
                 )
+                
+                raw_response = response.get("message", {}).get("content", "")
+                _LOGGER.debug("Raw response from model: %s", raw_response[:200] if raw_response else "(empty)")
 
-            response_text = response.get("message", {}).get("content", "I'm sorry, I couldn't process that.")
+            response_text = response.get("message", {}).get("content", "")
             
             # Filter out think blocks before returning to user
-            response_text = _filter_think_blocks(response_text)
+            filtered_text = _filter_think_blocks(response_text)
+            
+            # If filtering resulted in empty response, provide a helpful default
+            if not filtered_text or filtered_text.isspace():
+                _LOGGER.warning(
+                    "Response was empty after filtering think blocks. Original: %s",
+                    response_text[:200] if response_text else "(empty)"
+                )
+                # If we executed tools, confirm the action
+                if tool_calls:
+                    # Build a simple confirmation based on what was executed
+                    action_summaries = []
+                    for tool_call in tool_calls:
+                        func_name = tool_call.get("function", {}).get("name", "")
+                        args = tool_call.get("function", {}).get("arguments", {})
+                        entity_id = args.get("entity_id", "device")
+                        
+                        if func_name == "light_turn_on":
+                            brightness = args.get("brightness")
+                            if brightness:
+                                action_summaries.append(f"turned on {entity_id} to {brightness} brightness")
+                            else:
+                                action_summaries.append(f"turned on {entity_id}")
+                        elif func_name == "light_turn_off":
+                            action_summaries.append(f"turned off {entity_id}")
+                        elif func_name == "climate_set_temperature":
+                            temp = args.get("temperature")
+                            action_summaries.append(f"set {entity_id} to {temp}°")
+                    
+                    if action_summaries:
+                        filtered_text = f"Done! I've {', and '.join(action_summaries)}."
+                    else:
+                        filtered_text = "Done! I've completed the requested action."
+                else:
+                    filtered_text = "I've processed your request."
 
             # Store conversation history
             conversation_id = user_input.conversation_id or ulid.ulid_now()
@@ -350,7 +404,7 @@ class OllamaConversationEntity(ConversationEntity):
             self.hass.data[f"{DOMAIN}_conversations"][conversation_id] = messages[-10:]  # Keep last 10 messages
 
             intent_response = intent.IntentResponse(language=user_input.language)
-            intent_response.async_set_speech(response_text)
+            intent_response.async_set_speech(filtered_text)
             
             return ConversationResult(
                 response=intent_response,
@@ -397,11 +451,17 @@ You can interact with the devices listed above using these tools:
 3. When the user refers to a device by name, find the matching entity_id from the list above
 4. If a device name is ambiguous or not found, ask the user for clarification
 5. Always confirm what action you're performing before executing
-6. After taking an action, report what was done
+6. After taking an action, provide a brief, natural confirmation to the user
+
+**Response Format:**
+- Do NOT use <think> tags or internal reasoning blocks in your responses
+- Provide clear, concise responses directly to the user
+- After executing a tool, simply confirm what was done (e.g., "I've turned off the desk lamp.")
+- Keep confirmations brief and natural
 
 **Example Interactions:**
-- User: "Turn on the kitchen light" → You use light_turn_on with entity_id "light.kitchen"
-- User: "Set the bedroom to 72 degrees" → You use climate_set_temperature with entity_id "climate.bedroom" and temperature 72
+- User: "Turn on the kitchen light" → You use light_turn_on with entity_id "light.kitchen" → You respond: "I've turned on the kitchen light."
+- User: "Set the bedroom to 72 degrees" → You use climate_set_temperature with entity_id "climate.bedroom" and temperature 72 → You respond: "I've set the bedroom temperature to 72°."
 - User: "Turn off all lights" → You ask which lights since there are multiple, or turn off each one separately
 
 Now respond helpfully to the user's request."""
