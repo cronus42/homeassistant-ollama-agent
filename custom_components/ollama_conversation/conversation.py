@@ -238,6 +238,33 @@ def _parse_gemma3_tool_format(response: dict, domain_map: dict = None) -> list:
     
     return tool_calls
 
+def _extract_json_from_markdown(content: str):
+    """Extract JSON from markdown code blocks."""
+    import json
+    import re
+    
+    if not isinstance(content, str):
+        return None
+    
+    # Match code fences: ```json...content...``` or ```...content...```
+    pattern = r'[`]{3}(?:json)?[s]*[
+]?(.*?)[
+]?[`]{3}'
+    matches = re.findall(pattern, content, re.DOTALL)
+    
+    if matches:
+        for match in matches:
+            try:
+                return json.loads(match.strip())
+            except json.JSONDecodeError:
+                continue
+    
+    # Try parsing the whole string as JSON
+    try:
+        return json.loads(content.strip())
+    except json.JSONDecodeError:
+        return None
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -321,19 +348,29 @@ class OllamaConversationEntity(ConversationEntity):
             _LOGGER.debug("Full response from Ollama: %s", response)
             _LOGGER.debug("Message content keys: %s", list(message_content.keys()))
             
+            # Try to extract JSON from markdown code blocks in content
+            content_text = message_content.get("content", "")
+            json_from_content = _extract_json_from_markdown(content_text)
+            
             # Handle tool calls - check for both standard and gemma3-tools formats
             if "tool_calls" in message_content:
                 # Standard format
                 tool_calls = message_content.get("tool_calls")
                 _LOGGER.info("Detected standard tool call format: %s", tool_calls)
             elif _is_gemma3_tool_format(message_content):
-                # Gemma3-tools format
-                _LOGGER.info("Detected gemma3-tools format, converting...")
+                # Gemma3-tools format in message structure
+                _LOGGER.info("Detected gemma3-tools format in message structure, converting...")
                 tool_calls = _parse_gemma3_tool_format(message_content)
                 if tool_calls:
                     _LOGGER.info("Converted %d gemma3-tools calls to standard format: %s", len(tool_calls), tool_calls)
+            elif json_from_content and _is_gemma3_tool_format(json_from_content):
+                # Gemma3-tools format in markdown code block
+                _LOGGER.info("Detected gemma3-tools format in markdown code block, converting...")
+                tool_calls = _parse_gemma3_tool_format(json_from_content)
+                if tool_calls:
+                    _LOGGER.info("Converted %d gemma3-tools calls from markdown: %s", len(tool_calls), tool_calls)
             else:
-                _LOGGER.warning("No tool calls detected in response. Content: %s", message_content.get("content", "")[:500])
+                _LOGGER.warning("No tool calls detected in response. Content: %s", content_text[:500])
             
             # Execute tool calls if any were found
             if tool_calls:
