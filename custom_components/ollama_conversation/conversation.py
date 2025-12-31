@@ -264,6 +264,61 @@ def _extract_json_from_markdown(content: str):
         return None
 
 
+def _parse_qwen_tool_format(content: str) -> list:
+    """Parse Qwen's <tool_call> XML format and convert to standard tool_calls format.
+    
+    Qwen models output tool calls wrapped in XML tags like:
+    <tool_call>
+    {"name": "light_turn_on", "arguments": {"entity_id": "light.kitchen"}}
+    </tool_call>
+    
+    This function extracts these and converts them to the standard format.
+    
+    Args:
+        content: The response text potentially containing <tool_call> tags
+        
+    Returns:
+        List of tool_calls in standard format
+    """
+    if not isinstance(content, str) or "<tool_call>" not in content:
+        return []
+    
+    tool_calls = []
+    
+    # Pattern to match <tool_call>...</tool_call> blocks
+    pattern = r'<tool_call>\s*\n?(.*?)\n?</tool_call>'
+    matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+    
+    for match in matches:
+        try:
+            # Parse the JSON content inside the tool_call tags
+            tool_data = json.loads(match.strip())
+            
+            # Convert to standard tool_call format
+            tool_call = {
+                "function": {
+                    "name": tool_data.get("name", ""),
+                    "arguments": tool_data.get("arguments", {})
+                }
+            }
+            
+            tool_calls.append(tool_call)
+            _LOGGER.debug("Parsed Qwen tool call: %s", tool_call)
+            
+        except json.JSONDecodeError as e:
+            _LOGGER.warning(
+                "Failed to parse Qwen tool call JSON: %s. Error: %s",
+                match[:100], str(e)
+            )
+            continue
+    
+    if tool_calls:
+        _LOGGER.info("Extracted %d tool calls from Qwen format", len(tool_calls))
+    
+    return tool_calls
+
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -350,11 +405,17 @@ class OllamaConversationEntity(ConversationEntity):
             content_text = message_content.get("content", "")
             json_from_content = _extract_json_from_markdown(content_text)
             
-            # Handle tool calls - check for both standard and gemma3-tools formats
+            # Handle tool calls - check for standard, gemma3-tools, and qwen formats
             if "tool_calls" in message_content:
                 # Standard format
                 tool_calls = message_content.get("tool_calls")
                 _LOGGER.info("Detected standard tool call format: %s", tool_calls)
+            elif "<tool_call>" in content_text:
+                # Qwen format with <tool_call> XML tags
+                _LOGGER.info("Detected Qwen tool call format, extracting...")
+                tool_calls = _parse_qwen_tool_format(content_text)
+                if tool_calls:
+                    _LOGGER.info("Converted %d Qwen tool calls to standard format: %s", len(tool_calls), tool_calls)
             elif _is_gemma3_tool_format(message_content):
                 # Gemma3-tools format in message structure
                 _LOGGER.info("Detected gemma3-tools format in message structure, converting...")
