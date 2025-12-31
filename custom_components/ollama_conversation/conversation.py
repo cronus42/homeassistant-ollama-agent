@@ -247,9 +247,7 @@ def _extract_json_from_markdown(content: str):
         return None
     
     # Match code fences: ```json...content...``` or ```...content...```
-    pattern = r'[`]{3}(?:json)?[s]*[
-]?(.*?)[
-]?[`]{3}'
+    pattern = r'[`]{3}(?:json)?\s*\n?(.*?)\n?[`]{3}'
     matches = re.findall(pattern, content, re.DOTALL)
     
     if matches:
